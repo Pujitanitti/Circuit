@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: "Geist", "Inter", system-ui, sans-serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  * {
+    @apply border-canvas-border;
+  }
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+  }
+  ::selection {
+    @apply bg-accent/30 text-ink;
+  }
+  /* Every interactive element in this app sets outline-none for its default
+     state (to avoid a heavy native ring on click), but keyboard users still
+     need a visible focus indicator — this restores one for :focus-visible
+     specifically, so it only appears for keyboard navigation, not clicks. */
+  button:focus-visible, a:focus-visible, input:focus-visible,
+  textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid theme('colors.accent.DEFAULT');
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  .panel {
+    @apply bg-canvas-surface border border-canvas-border rounded-panel shadow-panel;
+  }
+  .panel-raised {
+    @apply bg-canvas-raised border border-canvas-border rounded-panel shadow-panel;
+  }
+  .panel-hover {
+    @apply transition-shadow hover:shadow-panelHover;
+  }
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, theme('colors.canvas.raised') 25%, theme('colors.canvas.border') 37%, theme('colors.canvas.raised') 63%);
+  background-size: 400px 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}

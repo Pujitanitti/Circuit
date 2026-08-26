@@ -1,0 +1,268 @@
+// Circuit — data model
+// Postgres via Prisma. See README.md#database for design rationale.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Identity ----------
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  name          String
+  createdAt     DateTime @default(now())
+
+  memberships   WorkspaceMember[]
+  executions    Execution[]        @relation("TriggeredBy")
+}
+
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  createdAt   DateTime @default(now())
+
+  members     WorkspaceMember[]
+  workflows   Workflow[]
+  tools       Tool[]
+  credentials Credential[]
+  templates   Template[]
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  role        Role     @default(MEMBER)
+  userId      String
+  workspaceId String
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+// ---------- Workflow definition ----------
+
+model Workflow {
+  id           String   @id @default(cuid())
+  name         String
+  description  String?
+  workspaceId  String
+  activeVersionId String? @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace    Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  versions     WorkflowVersion[]
+  activeVersion WorkflowVersion? @relation("ActiveVersion", fields: [activeVersionId], references: [id])
+  executions   Execution[]
+
+  @@index([workspaceId])
+}
+
+// A workflow version is an immutable snapshot of nodes+edges.
+// Executions reference a specific version so history stays reproducible
+// even after the workflow is edited again. See README.md#versioning.
+model WorkflowVersion {
+  id          String   @id @default(cuid())
+  workflowId  String
+  version     Int
+  graph       Json     // { nodes: [...], edges: [...] } — validated snapshot
+  createdAt   DateTime @default(now())
+  createdBy   String?
+
+  workflow    Workflow     @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  activeFor   Workflow?    @relation("ActiveVersion")
+  nodes       WorkflowNode[]
+  edges       WorkflowEdge[]
+  executions  Execution[]
+
+  @@unique([workflowId, version])
+  @@index([workflowId])
+}
+
+model WorkflowNode {
+  id                String   @id @default(cuid())
+  workflowVersionId String
+  key               String   // stable id referenced by edges/state, e.g. "agent_1"
+  type              NodeType
+  label             String
+  config            Json     // node-type-specific configuration
+  positionX         Float
+  positionY         Float
+
+  workflowVersion   WorkflowVersion @relation(fields: [workflowVersionId], references: [id], onDelete: Cascade)
+  nodeExecutions    NodeExecution[]
+
+  @@unique([workflowVersionId, key])
+  @@index([workflowVersionId])
+}
+
+model WorkflowEdge {
+  id                String   @id @default(cuid())
+  workflowVersionId String
+  sourceKey         String
+  targetKey         String
+  sourceHandle      String?  // e.g. "true" / "false" for condition branches, "loop" / "done"
+  label             String?
+
+  workflowVersion   WorkflowVersion @relation(fields: [workflowVersionId], references: [id], onDelete: Cascade)
+
+  @@index([workflowVersionId])
+}
+
+enum NodeType {
+  TRIGGER
+  AGENT
+  TOOL
+  CONDITION
+  TRANSFORM
+  LOOP
+  DELAY
+  APPROVAL
+  OUTPUT
+}
+
+// ---------- Execution ----------
+
+model Execution {
+  id                String   @id @default(cuid())
+  workflowId        String
+  workflowVersionId String
+  status            ExecutionStatus @default(PENDING)
+  state             Json     @default("{}") // running variable/state snapshot
+  triggeredById     String?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  cancelRequested   Boolean  @default(false)
+  createdAt         DateTime @default(now())
+
+  workflow          Workflow        @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  workflowVersion   WorkflowVersion @relation(fields: [workflowVersionId], references: [id])
+  triggeredBy       User?           @relation("TriggeredBy", fields: [triggeredById], references: [id])
+  nodeExecutions    NodeExecution[]
+  logs              ExecutionLog[]
+
+  @@index([workflowId])
+  @@index([status])
+}
+
+enum ExecutionStatus {
+  PENDING
+  RUNNING
+  WAITING_APPROVAL
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+model NodeExecution {
+  id           String   @id @default(cuid())
+  executionId  String
+  nodeId       String
+  status       NodeStatus @default(PENDING)
+  attempt      Int      @default(1)
+  input        Json?
+  output       Json?
+  error        String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+
+  execution    Execution     @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  node         WorkflowNode  @relation(fields: [nodeId], references: [id])
+
+  @@index([executionId])
+  @@index([nodeId])
+}
+
+enum NodeStatus {
+  PENDING
+  RUNNING
+  RETRYING
+  WAITING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+model ExecutionLog {
+  id          String   @id @default(cuid())
+  executionId String
+  nodeKey     String?
+  level       LogLevel @default(INFO)
+  message     String
+  metadata    Json?
+  timestamp   DateTime @default(now())
+
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@index([executionId])
+}
+
+enum LogLevel {
+  INFO
+  WARN
+  ERROR
+}
+
+// ---------- Tools & credentials ----------
+
+model Tool {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  name         String
+  description  String
+  category     String
+  icon         String
+  inputSchema  Json
+  outputSchema Json
+  builtin      Boolean  @default(true)
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+}
+
+// Secrets are encrypted at rest (AES-256-GCM) — see README.md#credential-security.
+// `encryptedValue` never leaves the server; API responses only ever return `maskedPreview`.
+model Credential {
+  id             String   @id @default(cuid())
+  workspaceId    String
+  name           String
+  provider       String
+  encryptedValue String
+  maskedPreview  String
+  createdAt      DateTime @default(now())
+
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+model Template {
+  id          String   @id @default(cuid())
+  workspaceId String?  // null = global template
+  name        String
+  description String
+  category    String
+  graph       Json
+
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
